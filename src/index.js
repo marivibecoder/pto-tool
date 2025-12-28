@@ -1162,7 +1162,7 @@ async function publishHome(client, slack_id) {
             text: { type: "plain_text", text: "Cancel 🟡" },
             style: "danger",
             action_id: "pto_cancel_btn",
-            value: r.id,
+            value: String(r.id),
             confirm: {
               title: { type: "plain_text", text: "Cancel PTO request" },
               text: {
