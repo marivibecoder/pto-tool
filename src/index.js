@@ -1141,9 +1141,11 @@ async function publishHome(client, slack_id) {
         text: { type: "mrkdwn", text: "_No tenés solicitudes todavía._" },
       });
     } else {
+      console.log("🔍 DEBUG: Processing", myReqs.length, "requests");
       for (const r of myReqs) {
         // Only show cancel button for pending or approved requests
         const canCancel = r.status === "pending" || r.status === "approved";
+        console.log(`🔍 Request ${r.id}: status="${r.status}", canCancel=${canCancel}`);
         
         const sectionBlock = {
           type: "section",
@@ -1157,6 +1159,7 @@ async function publishHome(client, slack_id) {
 
         // Add cancel button if applicable
         if (canCancel) {
+          console.log(`🔍 ✅ Adding cancel button to request ${r.id}`);
           sectionBlock.accessory = {
             type: "button",
             text: { type: "plain_text", text: "Cancel 🟡" },
@@ -1173,6 +1176,8 @@ async function publishHome(client, slack_id) {
               deny: { type: "plain_text", text: "No, keep it" },
             },
           };
+        } else {
+          console.log(`🔍 ❌ NOT adding cancel button (status: ${r.status})`);
         }
 
         blocks.push(sectionBlock);
@@ -1262,12 +1267,15 @@ async function publishHome(client, slack_id) {
       });
     }
 
+    console.log(`🔍 Total blocks before publishing: ${blocks.length}`);
     await client.views.publish({
       user_id: slack_id,
       view: { type: "home", blocks },
     });
+    console.log(`✅ Home tab published successfully for user ${slack_id}`);
   } catch (e) {
-    console.error("app_home_opened error", e);
+    console.error("❌ ERROR in publishHome:", e);
+    console.error("❌ Error stack:", e.stack);
   }
 
 }
