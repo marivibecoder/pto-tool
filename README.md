@@ -54,6 +54,8 @@ GET /health
 
 ### 2️⃣ Levantar ngrok (otra terminal)
 
+> No tenes ngrok? Descargalo [aca](https://ngrok.com/download/mac-os?tab=download)
+
 ```
 ./ngrok http 3000
 ```
