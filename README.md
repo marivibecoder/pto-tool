@@ -32,6 +32,11 @@ MVP simple pero **bien hecho**: policy clara, balances por tipo, validaciones y 
 
 ---
 
+## Deployment
+
+- Esto se encuentra deployado en Railway: https://railway.com/project/4a55ebf7-e5c3-49db-9832-92ec00bda625?
+
+
 ## ▶️ Cómo levantar el proyecto
 
 ### 1️⃣ Levantar backend
