@@ -580,29 +580,57 @@ slack.action("pto_deny_btn", async ({ ack, body, client }) => {
 slack.action("pto_cancel_btn", async ({ ack, body, client }) => {
   await ack();
 
-  const request_id = body.actions[0].value;
+  // Note: This handler only fires when user confirms the cancellation.
+  // If user clicks "No, keep it", Slack doesn't send the event.
+
+  const request_id = body.actions[0]?.value;
   const slack_id = body.user.id;
+
+  if (!request_id) {
+    console.error("❌ Cancel: request_id missing from action", body.actions);
+    return;
+  }
+
+  console.log(`🔍 Cancel: request_id=${request_id}, slack_id=${slack_id}`);
 
   const resp = await fetch(`${BASE_URL}/pto/cancel`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ request_id, slack_id }),
+    body: JSON.stringify({ request_id: String(request_id), slack_id }),
   });
 
   const json = await resp.json();
 
   if (!resp.ok) {
+    console.error(`❌ Cancel failed: ${json.error || "error"}`);
     // Send DM to user if error
-    const dm = await client.conversations.open({ users: slack_id });
-    await client.chat.postMessage({
-      channel: dm.channel.id,
-      text: `❌ No se pudo cancelar: ${json.error || "error"}`,
-    });
+    try {
+      const dm = await client.conversations.open({ users: slack_id });
+      await client.chat.postMessage({
+        channel: dm.channel.id,
+        text: `❌ No se pudo cancelar: ${json.error || "error"}`,
+      });
+    } catch (e) {
+      console.error("Error sending DM:", e);
+    }
     return;
   }
 
-  // Success: refresh Home tab (the confirmation dialog already showed success)
-  await publishHome(client, slack_id);
+  console.log(`✅ Cancel successful: request ${request_id} cancelled`);
+
+  // Success: refresh Home tab and send confirmation
+  try {
+    await publishHome(client, slack_id);
+    
+    // Send confirmation DM
+    const dm = await client.conversations.open({ users: slack_id });
+    await client.chat.postMessage({
+      channel: dm.channel.id,
+      text: `✅ Solicitud cancelada exitosamente.`,
+    });
+  } catch (e) {
+    console.error("Error refreshing home or sending confirmation:", e);
+  }
 });
 
 // ---------------------------
@@ -810,25 +838,36 @@ app.post("/pto/cancel", async (req, res) => {
     return res.status(400).json({ error: "request_id and slack_id are required" });
   }
 
+  console.log(`🔍 Cancel API: request_id=${request_id}, slack_id=${slack_id}`);
+
   // Get user
   const { user, error: userError } = await getUserBySlackId(slack_id);
   if (userError || !user) {
+    console.error(`❌ Cancel: User not found for slack_id=${slack_id}`);
     return res.status(400).json({ error: "User not found" });
+  }
+
+  // Convert request_id to number if it's a string
+  const reqId = typeof request_id === "string" ? parseInt(request_id, 10) : request_id;
+  if (isNaN(reqId)) {
+    return res.status(400).json({ error: "Invalid request_id format" });
   }
 
   // Get request and verify ownership
   const { data: request, error: reqError } = await supabase
     .from("pto_requests")
     .select("id, user_id, status, start_date")
-    .eq("id", request_id)
+    .eq("id", reqId)
     .single();
 
   if (reqError || !request) {
+    console.error(`❌ Cancel: Request not found for id=${reqId}`, reqError);
     return res.status(400).json({ error: "Request not found" });
   }
 
   // Verify ownership
   if (request.user_id !== user.id) {
+    console.error(`❌ Cancel: Ownership mismatch. Request user_id=${request.user_id}, current user_id=${user.id}`);
     return res.status(403).json({ error: "You can only cancel your own requests" });
   }
 
@@ -853,12 +892,16 @@ app.post("/pto/cancel", async (req, res) => {
       decided_at: new Date().toISOString(),
       decided_by: user.id, // User cancelling their own request
     })
-    .eq("id", request_id)
+    .eq("id", reqId)
     .select()
     .single();
 
-  if (error) return res.status(400).json({ error });
+  if (error) {
+    console.error(`❌ Cancel: Database error`, error);
+    return res.status(400).json({ error });
+  }
 
+  console.log(`✅ Cancel: Request ${reqId} successfully cancelled`);
   res.json({ cancelled: data });
 });
 
