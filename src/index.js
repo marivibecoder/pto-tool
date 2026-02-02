@@ -1647,22 +1647,25 @@ slack.action("admin_manage_users", async ({ ack, body, client }) => {
 
   const slack_id = body.user.id;
 
-  // Verify admin
-  const { data: admin, error: adminError } = await supabase
-    .from("users")
-    .select("id, is_admin")
-    .eq("slack_id", slack_id)
-    .single();
+  // Run both queries in parallel for speed (Slack has 3s timeout for trigger_id)
+  const [adminResult, usersResult] = await Promise.all([
+    supabase
+      .from("users")
+      .select("id, is_admin")
+      .eq("slack_id", slack_id)
+      .single(),
+    supabase
+      .from("users")
+      .select("id, name, slack_id, manager_id")
+      .order("name", { ascending: true }),
+  ]);
+
+  const { data: admin, error: adminError } = adminResult;
+  const { data: allUsers, error: usersError } = usersResult;
 
   if (adminError || !admin?.is_admin) {
     return;
   }
-
-  // Get all users for dropdowns
-  const { data: allUsers, error: usersError } = await supabase
-    .from("users")
-    .select("id, name, slack_id, manager_id")
-    .order("name", { ascending: true });
 
   if (usersError || !allUsers || allUsers.length === 0) {
     return;
