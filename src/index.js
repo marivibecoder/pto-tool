@@ -1617,7 +1617,9 @@ async function publishHome(client, slack_id) {
     }
 
     // 5) Admin tools (solo admin)
+    console.log(`🔍 DEBUG: user.is_admin = ${user.is_admin}, user.id = ${user.id}, slack_id = ${slack_id}`);
     if (user.is_admin) {
+      console.log(`✅ DEBUG: Rendering admin tools with 3 buttons for ${slack_id}`);
       blocks.push({
         type: "header",
         text: { type: "plain_text", text: "🛠️ Admin tools" },
@@ -1643,6 +1645,8 @@ async function publishHome(client, slack_id) {
           },
         ],
       });
+    } else {
+      console.log(`❌ DEBUG: User ${slack_id} is NOT admin, skipping admin tools`);
     }
 
     console.log(`🔍 Total blocks before publishing: ${blocks.length}`);
