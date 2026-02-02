@@ -201,11 +201,21 @@ slack.command("/pto", async ({ ack, command, respond, client }) => {
 
   // HELP
   if (!text || text === "help") {
-    return respond(
+    let helpText =
       "Comandos:\n" +
       "• `/pto balance` → ver tu balance\n" +
-      "• `/pto request` → pedir PTO\n"
-    );
+      "• `/pto request` → pedir PTO\n" +
+      "• `/pto connect-calendar` → conectar Google Calendar\n";
+
+    if (user.is_admin) {
+      helpText +=
+        "\n*Admin commands:*\n" +
+        "• `/pto admin assign-manager @user @manager` → asignar manager\n" +
+        "• `/pto admin team @manager` → ver reportes directos\n" +
+        "• `/pto admin set-admin @user true/false` → promover/quitar admin\n";
+    }
+
+    return respond(helpText);
   }
 
   // BALANCE
@@ -322,6 +332,157 @@ slack.command("/pto", async ({ ack, command, respond, client }) => {
     });
 
     return;
+  }
+
+  // ---------------------------
+  // ADMIN COMMANDS
+  // ---------------------------
+  const originalText = (command.text || "").trim();
+
+  // ADMIN: assign-manager
+  if (text.startsWith("admin assign-manager")) {
+    if (!user.is_admin) {
+      return respond("Solo admins pueden usar este comando.");
+    }
+
+    // Parse: /pto admin assign-manager @user @manager
+    const mentions = originalText.match(/<@([A-Z0-9]+)\|?[^>]*>/g) || [];
+    if (mentions.length !== 2) {
+      return respond("Uso: `/pto admin assign-manager @usuario @manager`");
+    }
+
+    const targetSlackId = mentions[0].match(/<@([A-Z0-9]+)/)[1];
+    const managerSlackId = mentions[1].match(/<@([A-Z0-9]+)/)[1];
+
+    // Get target user
+    const { data: targetUser, error: targetError } = await supabase
+      .from("users")
+      .select("id, name")
+      .eq("slack_id", targetSlackId)
+      .single();
+
+    if (targetError || !targetUser) {
+      return respond(`Usuario <@${targetSlackId}> no está registrado en PTO tool.`);
+    }
+
+    // Get manager user
+    const { data: managerUser, error: managerError } = await supabase
+      .from("users")
+      .select("id, name")
+      .eq("slack_id", managerSlackId)
+      .single();
+
+    if (managerError || !managerUser) {
+      return respond(`Manager <@${managerSlackId}> no está registrado en PTO tool.`);
+    }
+
+    // Update manager_id
+    const { error: updateError } = await supabase
+      .from("users")
+      .update({ manager_id: managerUser.id })
+      .eq("id", targetUser.id);
+
+    if (updateError) {
+      return respond(`Error actualizando manager: ${updateError.message}`);
+    }
+
+    return respond(`✅ Manager de <@${targetSlackId}> actualizado a <@${managerSlackId}>`);
+  }
+
+  // ADMIN: team (ver reportes directos)
+  if (text.startsWith("admin team")) {
+    if (!user.is_admin) {
+      return respond("Solo admins pueden usar este comando.");
+    }
+
+    // Parse: /pto admin team @manager
+    const mentions = originalText.match(/<@([A-Z0-9]+)\|?[^>]*>/g) || [];
+    if (mentions.length !== 1) {
+      return respond("Uso: `/pto admin team @manager`");
+    }
+
+    const managerSlackId = mentions[0].match(/<@([A-Z0-9]+)/)[1];
+
+    // Get manager user
+    const { data: managerUser, error: managerError } = await supabase
+      .from("users")
+      .select("id, name")
+      .eq("slack_id", managerSlackId)
+      .single();
+
+    if (managerError || !managerUser) {
+      return respond(`Usuario <@${managerSlackId}> no está registrado en PTO tool.`);
+    }
+
+    // Get direct reports
+    const { data: reports, error: reportsError } = await supabase
+      .from("users")
+      .select("name, slack_id, is_admin, is_student")
+      .eq("manager_id", managerUser.id);
+
+    if (reportsError) {
+      return respond(`Error obteniendo reportes: ${reportsError.message}`);
+    }
+
+    if (!reports || reports.length === 0) {
+      return respond(`<@${managerSlackId}> no tiene reportes directos.`);
+    }
+
+    const lines = [`*Reportes directos de <@${managerSlackId}>:*\n`];
+    for (const r of reports) {
+      const tags = [];
+      if (r.is_admin) tags.push("admin");
+      if (r.is_student) tags.push("student");
+      const tagStr = tags.length > 0 ? ` (${tags.join(", ")})` : "";
+      lines.push(`• <@${r.slack_id}>${tagStr}`);
+    }
+
+    return respond(lines.join("\n"));
+  }
+
+  // ADMIN: set-admin
+  if (text.startsWith("admin set-admin")) {
+    if (!user.is_admin) {
+      return respond("Solo admins pueden usar este comando.");
+    }
+
+    // Parse: /pto admin set-admin @user true/false
+    const mentions = originalText.match(/<@([A-Z0-9]+)\|?[^>]*>/g) || [];
+    if (mentions.length !== 1) {
+      return respond("Uso: `/pto admin set-admin @usuario true/false`");
+    }
+
+    const targetSlackId = mentions[0].match(/<@([A-Z0-9]+)/)[1];
+    const isAdminValue = text.includes("true");
+    const isFalseValue = text.includes("false");
+
+    if (!isAdminValue && !isFalseValue) {
+      return respond("Uso: `/pto admin set-admin @usuario true/false`");
+    }
+
+    // Get target user
+    const { data: targetUser, error: targetError } = await supabase
+      .from("users")
+      .select("id, name, is_admin")
+      .eq("slack_id", targetSlackId)
+      .single();
+
+    if (targetError || !targetUser) {
+      return respond(`Usuario <@${targetSlackId}> no está registrado en PTO tool.`);
+    }
+
+    // Update is_admin
+    const { error: updateError } = await supabase
+      .from("users")
+      .update({ is_admin: isAdminValue })
+      .eq("id", targetUser.id);
+
+    if (updateError) {
+      return respond(`Error actualizando admin status: ${updateError.message}`);
+    }
+
+    const action = isAdminValue ? "promovido a admin" : "removido como admin";
+    return respond(`✅ <@${targetSlackId}> ${action}`);
   }
 
   return respond("No entendí. Probá `/pto help`.");
@@ -1230,14 +1391,23 @@ async function publishHome(client, slack_id) {
     blocks.push({ type: "divider" });
 
     // 4) Pending approvals (si sos manager o admin)
+    // admin: ve TODAS las requests pendientes
     // manager: requests donde approver_id = user.id
-    const { data: pendingToApprove } = await supabase
+    let pendingQuery = supabase
       .from("pto_requests")
       .select("id, start_date, end_date, status, type, days_count, user_id, created_at")
       .eq("status", "pending")
-      .eq("approver_id", user.id)
-      .order("created_at", { ascending: false })
-      .limit(5);
+      .order("created_at", { ascending: false });
+
+    if (user.is_admin) {
+      // Admin sees ALL pending requests
+      pendingQuery = pendingQuery.limit(10);
+    } else {
+      // Manager only sees their direct reports
+      pendingQuery = pendingQuery.eq("approver_id", user.id).limit(5);
+    }
+
+    const { data: pendingToApprove } = await pendingQuery;
 
     if ((pendingToApprove || []).length > 0 || user.is_admin) {
       blocks.push({
