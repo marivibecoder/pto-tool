@@ -234,14 +234,9 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, service: "pto-mvp", ts: new Date().toISOString() });
 });
 
-// Version endpoint to verify deployed code
+// Version endpoint
 app.get("/version", (req, res) => {
-  res.json({ 
-    version: "2.2.0", 
-    commit: "d310bfe-debug",
-    features: ["manage-teams", "historical-pto", "auto-register", "sync-users", "notifications"],
-    deployed: new Date().toISOString()
-  });
+  res.json({ version: "1.0.0" });
 });
 
 // ---------------------------
@@ -1618,9 +1613,7 @@ async function publishHome(client, slack_id) {
     }
 
     // 5) Admin tools (solo admin)
-    console.log(`🔍 DEBUG: user.is_admin = ${user.is_admin}, user.id = ${user.id}, slack_id = ${slack_id}`);
     if (user.is_admin) {
-      console.log(`✅ DEBUG: Rendering admin tools with 3 buttons for ${slack_id}`);
       blocks.push({
         type: "header",
         text: { type: "plain_text", text: "🛠️ Admin tools" },
@@ -1646,8 +1639,6 @@ async function publishHome(client, slack_id) {
           },
         ],
       });
-    } else {
-      console.log(`❌ DEBUG: User ${slack_id} is NOT admin, skipping admin tools`);
     }
 
     console.log(`🔍 Total blocks before publishing: ${blocks.length}`);
