@@ -1289,6 +1289,86 @@ app.get("/admin/reports/pto", async (req, res) => {
   res.json({ data });
 });
 
+// ---------------------------
+// Admin: Sync all Slack users to Supabase
+// ---------------------------
+app.get("/admin/sync-users", async (req, res) => {
+  const { admin_slack_id } = req.query;
+
+  if (!admin_slack_id) {
+    return res.status(400).json({ error: "admin_slack_id is required" });
+  }
+
+  const auth = await requireAdmin(admin_slack_id);
+  if (!auth.ok) return res.status(403).json({ error: auth.error });
+
+  try {
+    // Get all users from Slack
+    const slackUsers = await slack.client.users.list();
+
+    if (!slackUsers.ok) {
+      return res.status(500).json({ error: "Failed to fetch Slack users" });
+    }
+
+    // Filter out bots and deactivated users
+    const realUsers = (slackUsers.members || []).filter(
+      (u) => !u.is_bot && !u.deleted && u.id !== "USLACKBOT"
+    );
+
+    // Get existing users from Supabase
+    const { data: existingUsers } = await supabase
+      .from("users")
+      .select("slack_id");
+
+    const existingSlackIds = new Set((existingUsers || []).map((u) => u.slack_id));
+
+    // Find users that don't exist yet
+    const newUsers = realUsers.filter((u) => !existingSlackIds.has(u.id));
+
+    if (newUsers.length === 0) {
+      return res.json({
+        ok: true,
+        message: "All Slack users already exist in database",
+        total_slack_users: realUsers.length,
+        created: 0,
+      });
+    }
+
+    // Create new users
+    const usersToInsert = newUsers.map((u) => ({
+      name: u.real_name || u.name || `User ${u.id}`,
+      slack_id: u.id,
+      manager_id: null,
+      is_admin: false,
+      is_student: false,
+      country: null,
+    }));
+
+    const { data: created, error: insertError } = await supabase
+      .from("users")
+      .insert(usersToInsert)
+      .select();
+
+    if (insertError) {
+      return res.status(500).json({ error: insertError.message });
+    }
+
+    console.log(`✅ Synced ${created.length} new users from Slack`);
+
+    res.json({
+      ok: true,
+      message: `Successfully synced ${created.length} new users`,
+      total_slack_users: realUsers.length,
+      already_existed: existingSlackIds.size,
+      created: created.length,
+      new_users: created.map((u) => ({ name: u.name, slack_id: u.slack_id })),
+    });
+  } catch (e) {
+    console.error("Error syncing users:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // evento app_home_opened
 async function publishHome(client, slack_id) {
   try {
