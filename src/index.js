@@ -234,6 +234,15 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, service: "pto-mvp", ts: new Date().toISOString() });
 });
 
+// Version endpoint to verify deployed code
+app.get("/version", (req, res) => {
+  res.json({ 
+    version: "2.1.0", 
+    features: ["manage-teams", "historical-pto", "auto-register", "sync-users", "notifications"],
+    deployed: new Date().toISOString()
+  });
+});
+
 // ---------------------------
 // Slack: /pto command (help, balance, request modal)
 // ---------------------------
