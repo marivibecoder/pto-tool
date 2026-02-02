@@ -1468,12 +1468,12 @@ async function publishHome(client, slack_id) {
         elements: [
           {
             type: "button",
-            text: { type: "plain_text", text: "👥 Manage users (next)" },
+            text: { type: "plain_text", text: "👥 Manage teams" },
             action_id: "admin_manage_users",
           },
           {
             type: "button",
-            text: { type: "plain_text", text: "📊 Download reports (next)" },
+            text: { type: "plain_text", text: "📊 Download reports (coming soon)" },
             action_id: "admin_download_reports",
           },
         ],
@@ -1639,6 +1639,150 @@ slack.action("home_review_request", async ({ ack, body, client }) => {
   });
 });
 
+// ---------------------------
+// Admin: Manage Teams modal
+// ---------------------------
+slack.action("admin_manage_users", async ({ ack, body, client }) => {
+  await ack();
+
+  const slack_id = body.user.id;
+
+  // Verify admin
+  const { data: admin, error: adminError } = await supabase
+    .from("users")
+    .select("id, is_admin")
+    .eq("slack_id", slack_id)
+    .single();
+
+  if (adminError || !admin?.is_admin) {
+    return;
+  }
+
+  // Get all users for dropdowns
+  const { data: allUsers, error: usersError } = await supabase
+    .from("users")
+    .select("id, name, slack_id, manager_id")
+    .order("name", { ascending: true });
+
+  if (usersError || !allUsers || allUsers.length === 0) {
+    return;
+  }
+
+  // Build options for manager dropdown
+  const managerOptions = allUsers.map((u) => ({
+    text: { type: "plain_text", text: u.name || `User ${u.slack_id}` },
+    value: String(u.id),
+  }));
+
+  // Build options for multi-select (users to assign)
+  const userOptions = allUsers.map((u) => {
+    const currentManager = allUsers.find((m) => m.id === u.manager_id);
+    const managerText = currentManager ? ` (→ ${currentManager.name})` : " (no manager)";
+    return {
+      text: { type: "plain_text", text: `${u.name || u.slack_id}${managerText}` },
+      value: String(u.id),
+    };
+  });
+
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: "modal",
+      callback_id: "admin_assign_team_submit",
+      title: { type: "plain_text", text: "Manage Teams" },
+      submit: { type: "plain_text", text: "Assign" },
+      close: { type: "plain_text", text: "Cancel" },
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: "Select a manager and choose which users should report to them.",
+          },
+        },
+        {
+          type: "input",
+          block_id: "manager_block",
+          label: { type: "plain_text", text: "Manager" },
+          element: {
+            type: "static_select",
+            action_id: "manager_select",
+            placeholder: { type: "plain_text", text: "Select manager" },
+            options: managerOptions,
+          },
+        },
+        {
+          type: "input",
+          block_id: "users_block",
+          label: { type: "plain_text", text: "Assign these users to the manager" },
+          element: {
+            type: "multi_static_select",
+            action_id: "users_select",
+            placeholder: { type: "plain_text", text: "Select users" },
+            options: userOptions,
+          },
+        },
+      ],
+    },
+  });
+});
+
+// Handle assign team submit
+slack.view("admin_assign_team_submit", async ({ ack, body, view, client }) => {
+  await ack();
+
+  const slack_id = body.user.id;
+
+  // Verify admin
+  const { data: admin, error: adminError } = await supabase
+    .from("users")
+    .select("id, is_admin")
+    .eq("slack_id", slack_id)
+    .single();
+
+  if (adminError || !admin?.is_admin) {
+    return;
+  }
+
+  // Get selected values
+  const managerId = view.state.values.manager_block.manager_select.selected_option.value;
+  const selectedUsers = view.state.values.users_block.users_select.selected_options || [];
+  const userIds = selectedUsers.map((o) => o.value);
+
+  if (userIds.length === 0) {
+    return;
+  }
+
+  // Update all selected users to have this manager
+  const { error: updateError } = await supabase
+    .from("users")
+    .update({ manager_id: parseInt(managerId, 10) })
+    .in("id", userIds.map((id) => parseInt(id, 10)));
+
+  if (updateError) {
+    console.error("Error updating manager assignments:", updateError);
+    return;
+  }
+
+  // Get manager name for confirmation
+  const { data: manager } = await supabase
+    .from("users")
+    .select("name, slack_id")
+    .eq("id", managerId)
+    .single();
+
+  const managerMention = manager?.slack_id ? `<@${manager.slack_id}>` : manager?.name || "Unknown";
+
+  // Send confirmation DM
+  const dm = await client.conversations.open({ users: slack_id });
+  await client.chat.postMessage({
+    channel: dm.channel.id,
+    text: `✅ Updated ${userIds.length} user(s) to report to ${managerMention}`,
+  });
+
+  // Refresh home
+  await publishHome(client, slack_id);
+});
 
 // ---------------------------
 // test-db (debug)
