@@ -102,6 +102,59 @@ async function getUserBySlackId(slack_id) {
   return { user: data, error: null };
 }
 
+// Auto-register user if they don't exist
+async function getOrCreateUser(slack_id, slackClient) {
+  // First, try to find existing user
+  const { data: existingUser, error: findError } = await supabase
+    .from("users")
+    .select("*")
+    .eq("slack_id", slack_id)
+    .single();
+
+  if (existingUser) {
+    return { user: existingUser, created: false, error: null };
+  }
+
+  // User doesn't exist, get their Slack profile
+  try {
+    const slackProfile = await slackClient.users.info({ user: slack_id });
+    
+    if (!slackProfile.ok || !slackProfile.user) {
+      return { user: null, created: false, error: "Could not fetch Slack profile" };
+    }
+
+    const profile = slackProfile.user;
+    const name = profile.real_name || profile.name || `User ${slack_id}`;
+
+    // Create user in Supabase
+    const { data: newUser, error: createError } = await supabase
+      .from("users")
+      .insert([
+        {
+          name,
+          slack_id,
+          manager_id: null,
+          is_admin: false,
+          is_student: false,
+          country: null,
+        },
+      ])
+      .select()
+      .single();
+
+    if (createError) {
+      console.error("Error creating user:", createError);
+      return { user: null, created: false, error: createError.message };
+    }
+
+    console.log(`✅ Auto-registered new user: ${name} (${slack_id})`);
+    return { user: newUser, created: true, error: null };
+  } catch (e) {
+    console.error("Error in getOrCreateUser:", e);
+    return { user: null, created: false, error: e.message };
+  }
+}
+
 async function canDecideRequest(request_id, deciderUserId, deciderIsAdmin) {
   const { data: reqData, error } = await supabase
     .from("pto_requests")
@@ -189,16 +242,21 @@ slack.command("/pto", async ({ ack, command, respond, client }) => {
 
   const text = (command.text || "").trim().toLowerCase();
 
-  // user lookup
-  const { data: user, error: userError } = await supabase
-    .from("users")
-    .select("*")
-    .eq("slack_id", command.user_id)
-    .single();
+  // Auto-register user if needed
+  const { user, created, error: userError } = await getOrCreateUser(command.user_id, client);
 
   if (userError || !user) {
     return respond(
-      "No estás registrado/a en la PTO tool todavía. Pedile a un admin que te cree como user (con tu Slack ID)."
+      "Error al verificar tu usuario. Intenta de nuevo o contacta a un admin."
+    );
+  }
+
+  // Welcome message for newly registered users
+  if (created) {
+    await respond(
+      `👋 *¡Bienvenido/a a PTO Tool, ${user.name}!*\n\n` +
+      `Tu cuenta fue creada automáticamente. Un admin te asignará un manager pronto.\n\n` +
+      `Mientras tanto, podés ver tus balances y explorar la app.`
     );
   }
 
@@ -1235,12 +1293,8 @@ app.get("/admin/reports/pto", async (req, res) => {
 async function publishHome(client, slack_id) {
   try {
 
-    // 1) user
-    const { data: user, error: userError } = await supabase
-      .from("users")
-      .select("*")
-      .eq("slack_id", slack_id)
-      .single();
+    // 1) Auto-register user if needed
+    const { user, created, error: userError } = await getOrCreateUser(slack_id, client);
 
     const blocks = [];
 
@@ -1250,15 +1304,15 @@ async function publishHome(client, slack_id) {
       text: { type: "plain_text", text: "🏖️ PTO Tool" },
     });
 
-    // If not registered
+    // If still no user (error creating)
     if (userError || !user) {
       blocks.push({
         type: "section",
         text: {
           type: "mrkdwn",
           text:
-            "No estás registrado/a todavía.\n" +
-            "Pedile a un admin que te dé de alta con tu Slack ID.",
+            "❌ Error al cargar tu perfil.\n" +
+            "Intenta de nuevo o contacta a un admin.",
         },
       });
 
@@ -1267,6 +1321,20 @@ async function publishHome(client, slack_id) {
         view: { type: "home", blocks },
       });
       return;
+    }
+
+    // Welcome banner for newly registered users
+    if (created) {
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text:
+            `👋 *¡Bienvenido/a, ${user.name}!*\n` +
+            `Tu cuenta fue creada automáticamente. Un admin te asignará un manager pronto.`,
+        },
+      });
+      blocks.push({ type: "divider" });
     }
 
     // Actions: Create OOO (abre modal)
