@@ -1624,6 +1624,11 @@ async function publishHome(client, slack_id) {
           },
           {
             type: "button",
+            text: { type: "plain_text", text: "📥 Add historical PTO" },
+            action_id: "admin_add_historical_pto",
+          },
+          {
+            type: "button",
             text: { type: "plain_text", text: "📊 Download reports (coming soon)" },
             action_id: "admin_download_reports",
           },
@@ -1932,6 +1937,223 @@ slack.view("admin_assign_team_submit", async ({ ack, body, view, client }) => {
   await client.chat.postMessage({
     channel: dm.channel.id,
     text: `✅ Updated ${userIds.length} user(s) to report to ${managerMention}`,
+  });
+
+  // Refresh home
+  await publishHome(client, slack_id);
+});
+
+// ---------------------------
+// Admin: Add Historical PTO modal
+// ---------------------------
+slack.action("admin_add_historical_pto", async ({ ack, body, client }) => {
+  await ack();
+
+  const slack_id = body.user.id;
+
+  // Run queries in parallel
+  const [adminResult, usersResult, typesResult] = await Promise.all([
+    supabase
+      .from("users")
+      .select("id, is_admin")
+      .eq("slack_id", slack_id)
+      .single(),
+    supabase
+      .from("users")
+      .select("id, name, slack_id")
+      .order("name", { ascending: true }),
+    supabase
+      .from("pto_types")
+      .select("category, name")
+      .order("category", { ascending: true })
+      .order("name", { ascending: true }),
+  ]);
+
+  const { data: admin, error: adminError } = adminResult;
+  const { data: allUsers, error: usersError } = usersResult;
+  const { data: ptoTypes, error: typesError } = typesResult;
+
+  if (adminError || !admin?.is_admin) {
+    return;
+  }
+
+  if (usersError || !allUsers || allUsers.length === 0) {
+    return;
+  }
+
+  // Build user options
+  const userOptions = allUsers.map((u) => ({
+    text: { type: "plain_text", text: u.name || `User ${u.slack_id}` },
+    value: String(u.id),
+  }));
+
+  // Build PTO type options
+  const typeOptions = (ptoTypes || []).map((t) => ({
+    text: { type: "plain_text", text: `${t.name} (${t.category})` },
+    value: `${t.category}||${t.name}`,
+  }));
+
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: "modal",
+      callback_id: "admin_historical_pto_submit",
+      title: { type: "plain_text", text: "Add Historical PTO" },
+      submit: { type: "plain_text", text: "Save" },
+      close: { type: "plain_text", text: "Cancel" },
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: "📥 *Add a historical PTO record*\n\nThis will be saved as `approved` automatically and will count against the user's balance.",
+          },
+        },
+        {
+          type: "input",
+          block_id: "user_block",
+          label: { type: "plain_text", text: "Employee" },
+          element: {
+            type: "static_select",
+            action_id: "user_select",
+            placeholder: { type: "plain_text", text: "Select employee" },
+            options: userOptions,
+          },
+        },
+        {
+          type: "input",
+          block_id: "type_block",
+          label: { type: "plain_text", text: "PTO Type" },
+          element: {
+            type: "static_select",
+            action_id: "type_select",
+            placeholder: { type: "plain_text", text: "Select type" },
+            options: typeOptions,
+          },
+        },
+        {
+          type: "input",
+          block_id: "start_date_block",
+          label: { type: "plain_text", text: "Start date" },
+          element: { type: "datepicker", action_id: "start_date" },
+        },
+        {
+          type: "input",
+          block_id: "end_date_block",
+          label: { type: "plain_text", text: "End date" },
+          element: { type: "datepicker", action_id: "end_date" },
+        },
+        {
+          type: "input",
+          block_id: "note_block",
+          optional: true,
+          label: { type: "plain_text", text: "Note (optional)" },
+          element: {
+            type: "plain_text_input",
+            action_id: "note",
+            placeholder: { type: "plain_text", text: "e.g., Migrated from old system" },
+          },
+        },
+      ],
+    },
+  });
+});
+
+// Handle historical PTO submit
+slack.view("admin_historical_pto_submit", async ({ ack, body, view, client }) => {
+  const slack_id = body.user.id;
+
+  // Verify admin
+  const { data: admin, error: adminError } = await supabase
+    .from("users")
+    .select("id, is_admin")
+    .eq("slack_id", slack_id)
+    .single();
+
+  if (adminError || !admin?.is_admin) {
+    await ack({ response_action: "errors", errors: { user_block: "Not authorized" } });
+    return;
+  }
+
+  // Get form values
+  const userId = view.state.values.user_block.user_select.selected_option.value;
+  const typeValue = view.state.values.type_block.type_select.selected_option.value;
+  const [category, type] = typeValue.split("||");
+  const start_date = view.state.values.start_date_block.start_date.selected_date;
+  const end_date = view.state.values.end_date_block.end_date.selected_date;
+  const note = view.state.values.note_block?.note?.value || "Historical record";
+
+  // Validate dates
+  if (end_date < start_date) {
+    await ack({
+      response_action: "errors",
+      errors: { end_date_block: "End date must be after start date" },
+    });
+    return;
+  }
+
+  // Calculate business days
+  const days = countBusinessDays(start_date, end_date);
+  if (!days) {
+    await ack({
+      response_action: "errors",
+      errors: { end_date_block: "Invalid dates" },
+    });
+    return;
+  }
+
+  // Create the PTO request as approved
+  const { data: newPto, error: createError } = await supabase
+    .from("pto_requests")
+    .insert([
+      {
+        user_id: parseInt(userId, 10),
+        start_date,
+        end_date,
+        days_count: days,
+        status: "approved",
+        category,
+        type,
+        reason: note,
+        approver_id: admin.id,
+        decided_by: admin.id,
+        decided_at: new Date().toISOString(),
+      },
+    ])
+    .select()
+    .single();
+
+  if (createError) {
+    console.error("Error creating historical PTO:", createError);
+    await ack({
+      response_action: "errors",
+      errors: { user_block: "Error saving record. Try again." },
+    });
+    return;
+  }
+
+  await ack();
+
+  // Get user name for confirmation
+  const { data: targetUser } = await supabase
+    .from("users")
+    .select("name, slack_id")
+    .eq("id", userId)
+    .single();
+
+  const userMention = targetUser?.slack_id ? `<@${targetUser.slack_id}>` : targetUser?.name || "Unknown";
+
+  // Send confirmation DM to admin
+  const dm = await client.conversations.open({ users: slack_id });
+  await client.chat.postMessage({
+    channel: dm.channel.id,
+    text:
+      `✅ *Historical PTO saved*\n\n` +
+      `• Employee: ${userMention}\n` +
+      `• Type: ${type}\n` +
+      `• Dates: ${start_date} → ${end_date}\n` +
+      `• Days: ${days}\n` +
+      `• Note: ${note}`,
   });
 
   // Refresh home
