@@ -237,7 +237,8 @@ app.get("/health", (req, res) => {
 // Version endpoint to verify deployed code
 app.get("/version", (req, res) => {
   res.json({ 
-    version: "2.1.0", 
+    version: "2.2.0", 
+    commit: "d310bfe-debug",
     features: ["manage-teams", "historical-pto", "auto-register", "sync-users", "notifications"],
     deployed: new Date().toISOString()
   });
