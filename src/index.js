@@ -7,6 +7,9 @@ const { App, ExpressReceiver } = pkg;
 // Base URL for internal API calls
 const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
 
+// Channel for PTO announcements
+const PTO_CHANNEL_ID = process.env.PTO_CHANNEL_ID || "C0AD8JE79FA";
+
 // ---------------------------
 // PTO Types (fallback util)
 // ---------------------------
@@ -1785,6 +1788,125 @@ slack.view("admin_assign_team_submit", async ({ ack, body, view, client }) => {
 
   // Refresh home
   await publishHome(client, slack_id);
+});
+
+// ---------------------------
+// Cron: Daily PTO notifications
+// Call this endpoint daily (e.g., via Railway cron or external scheduler)
+// ---------------------------
+app.get("/cron/pto-notifications", async (req, res) => {
+  try {
+    const today = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+    const results = { started: [], ended: [] };
+
+    // 1) Find approved PTOs that START today
+    const { data: startingToday, error: startError } = await supabase
+      .from("pto_requests")
+      .select("id, user_id, type, start_date, end_date, days_count")
+      .eq("status", "approved")
+      .eq("start_date", today);
+
+    if (startError) {
+      console.error("Error fetching starting PTOs:", startError);
+    }
+
+    // 2) Find approved PTOs that END today
+    const { data: endingToday, error: endError } = await supabase
+      .from("pto_requests")
+      .select("id, user_id, type, start_date, end_date")
+      .eq("status", "approved")
+      .eq("end_date", today);
+
+    if (endError) {
+      console.error("Error fetching ending PTOs:", endError);
+    }
+
+    // Get all user IDs we need
+    const userIds = [
+      ...new Set([
+        ...(startingToday || []).map((p) => p.user_id),
+        ...(endingToday || []).map((p) => p.user_id),
+      ]),
+    ];
+
+    if (userIds.length === 0) {
+      return res.json({ ok: true, message: "No PTOs starting or ending today", results });
+    }
+
+    // Fetch users
+    const { data: users } = await supabase
+      .from("users")
+      .select("id, name, slack_id")
+      .in("id", userIds);
+
+    const userMap = {};
+    for (const u of users || []) userMap[u.id] = u;
+
+    // 3) Process PTOs starting today
+    for (const pto of startingToday || []) {
+      const user = userMap[pto.user_id];
+      if (!user?.slack_id) continue;
+
+      const startFormatted = pto.start_date;
+      const endFormatted = pto.end_date;
+
+      // DM to user
+      try {
+        const dm = await slack.client.conversations.open({ users: user.slack_id });
+        await slack.client.chat.postMessage({
+          channel: dm.channel.id,
+          text:
+            `🌴 *Your OOO starts today!*\n\n` +
+            `• Type: *${pto.type}*\n` +
+            `• Dates: *${startFormatted} → ${endFormatted}*\n` +
+            `• Days: *${pto.days_count}*\n\n` +
+            `💡 Remember to update your Slack status to:\n` +
+            `\`🌴 OOO ${startFormatted} - ${endFormatted}\``,
+        });
+      } catch (e) {
+        console.error(`Error sending DM to ${user.slack_id}:`, e.message);
+      }
+
+      // Post in #team-pto channel
+      try {
+        await slack.client.chat.postMessage({
+          channel: PTO_CHANNEL_ID,
+          text: `🌴 <@${user.slack_id}> is OOO today (${pto.type}) — ${startFormatted} → ${endFormatted}`,
+        });
+      } catch (e) {
+        console.error(`Error posting to channel:`, e.message);
+      }
+
+      results.started.push({ user: user.name, type: pto.type });
+    }
+
+    // 4) Process PTOs ending today
+    for (const pto of endingToday || []) {
+      const user = userMap[pto.user_id];
+      if (!user?.slack_id) continue;
+
+      // DM to user
+      try {
+        const dm = await slack.client.conversations.open({ users: user.slack_id });
+        await slack.client.chat.postMessage({
+          channel: dm.channel.id,
+          text:
+            `👋 *Welcome back!* Your OOO (${pto.type}) ends today.\n\n` +
+            `💡 Remember to clear your Slack status if you set one.`,
+        });
+      } catch (e) {
+        console.error(`Error sending DM to ${user.slack_id}:`, e.message);
+      }
+
+      results.ended.push({ user: user.name, type: pto.type });
+    }
+
+    console.log(`✅ Cron completed: ${results.started.length} started, ${results.ended.length} ended`);
+    res.json({ ok: true, results });
+  } catch (e) {
+    console.error("Cron error:", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // ---------------------------
