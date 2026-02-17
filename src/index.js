@@ -103,30 +103,46 @@ async function getUserBySlackId(slack_id) {
 }
 
 // Auto-register user if they don't exist (with retry for transient errors)
-async function getOrCreateUser(slack_id, slackClient, retries = 2) {
-  // First, try to find existing user
-  const { data: existingUser, error: findError } = await supabase
-    .from("users")
-    .select("*")
-    .eq("slack_id", slack_id)
-    .single();
+async function getOrCreateUser(slack_id, slackClient, retries = 3) {
+  console.log(`🔍 getOrCreateUser: Looking for ${slack_id} (attempt ${4 - retries}/3)`);
+  
+  try {
+    // First, try to find existing user
+    const { data: existingUser, error: findError } = await supabase
+      .from("users")
+      .select("*")
+      .eq("slack_id", slack_id)
+      .single();
 
-  // If user found, return immediately
-  if (existingUser) {
-    return { user: existingUser, created: false, error: null };
-  }
+    // If user found, return immediately
+    if (existingUser) {
+      console.log(`✅ getOrCreateUser: Found user ${existingUser.name}`);
+      return { user: existingUser, created: false, error: null };
+    }
 
-  // Handle connection errors with retry
-  if (findError && findError.code !== "PGRST116") {
-    // PGRST116 = "no rows returned" (expected when user doesn't exist)
-    // Any other error (timeout, connection) should be retried
-    console.error(`⚠️ DB error finding user (attempt ${3 - retries}/3):`, findError.message);
+    // Handle connection errors with retry
+    if (findError && findError.code !== "PGRST116") {
+      // PGRST116 = "no rows returned" (expected when user doesn't exist)
+      // Any other error (timeout, connection) should be retried
+      console.error(`⚠️ DB error finding user: code=${findError.code}, message=${findError.message}`);
+      
+      if (retries > 0) {
+        console.log(`🔄 Retrying in 1 second...`);
+        await new Promise(r => setTimeout(r, 1000)); // Wait 1 second
+        return getOrCreateUser(slack_id, slackClient, retries - 1);
+      }
+      return { user: null, created: false, error: `Connection error: ${findError.message}` };
+    }
     
+    console.log(`📝 User not found, will create new user for ${slack_id}`);
+  } catch (e) {
+    console.error(`❌ Exception in getOrCreateUser find:`, e.message);
     if (retries > 0) {
-      await new Promise(r => setTimeout(r, 1000)); // Wait 1 second
+      console.log(`🔄 Retrying after exception...`);
+      await new Promise(r => setTimeout(r, 1000));
       return getOrCreateUser(slack_id, slackClient, retries - 1);
     }
-    return { user: null, created: false, error: `Connection error: ${findError.message}` };
+    return { user: null, created: false, error: e.message };
   }
 
   // User doesn't exist, get their Slack profile
