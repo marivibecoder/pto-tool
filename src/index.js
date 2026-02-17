@@ -102,8 +102,8 @@ async function getUserBySlackId(slack_id) {
   return { user: data, error: null };
 }
 
-// Auto-register user if they don't exist
-async function getOrCreateUser(slack_id, slackClient) {
+// Auto-register user if they don't exist (with retry for transient errors)
+async function getOrCreateUser(slack_id, slackClient, retries = 2) {
   // First, try to find existing user
   const { data: existingUser, error: findError } = await supabase
     .from("users")
@@ -111,8 +111,22 @@ async function getOrCreateUser(slack_id, slackClient) {
     .eq("slack_id", slack_id)
     .single();
 
+  // If user found, return immediately
   if (existingUser) {
     return { user: existingUser, created: false, error: null };
+  }
+
+  // Handle connection errors with retry
+  if (findError && findError.code !== "PGRST116") {
+    // PGRST116 = "no rows returned" (expected when user doesn't exist)
+    // Any other error (timeout, connection) should be retried
+    console.error(`⚠️ DB error finding user (attempt ${3 - retries}/3):`, findError.message);
+    
+    if (retries > 0) {
+      await new Promise(r => setTimeout(r, 1000)); // Wait 1 second
+      return getOrCreateUser(slack_id, slackClient, retries - 1);
+    }
+    return { user: null, created: false, error: `Connection error: ${findError.message}` };
   }
 
   // User doesn't exist, get their Slack profile
