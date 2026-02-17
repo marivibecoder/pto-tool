@@ -128,25 +128,15 @@ async function getOrCreateUser(slack_id, slackClient, retries = 3) {
       
       if (retries > 0) {
         console.log(`🔄 Retrying in 1 second...`);
-        await new Promise(r => setTimeout(r, 1000)); // Wait 1 second
+        await new Promise(r => setTimeout(r, 1000));
         return getOrCreateUser(slack_id, slackClient, retries - 1);
       }
       return { user: null, created: false, error: `Connection error: ${findError.message}` };
     }
     
+    // User doesn't exist (PGRST116), create new user
     console.log(`📝 User not found, will create new user for ${slack_id}`);
-  } catch (e) {
-    console.error(`❌ Exception in getOrCreateUser find:`, e.message);
-    if (retries > 0) {
-      console.log(`🔄 Retrying after exception...`);
-      await new Promise(r => setTimeout(r, 1000));
-      return getOrCreateUser(slack_id, slackClient, retries - 1);
-    }
-    return { user: null, created: false, error: e.message };
-  }
-
-  // User doesn't exist, get their Slack profile
-  try {
+    
     const slackProfile = await slackClient.users.info({ user: slack_id });
     
     if (!slackProfile.ok || !slackProfile.user) {
@@ -179,9 +169,15 @@ async function getOrCreateUser(slack_id, slackClient, retries = 3) {
 
     console.log(`✅ Auto-registered new user: ${name} (${slack_id})`);
     return { user: newUser, created: true, error: null };
+    
   } catch (e) {
-    console.error("Error in getOrCreateUser:", e);
-    return { user: null, created: false, error: e.message };
+    console.error(`❌ Exception in getOrCreateUser:`, e.message || e);
+    if (retries > 0) {
+      console.log(`🔄 Retrying after exception...`);
+      await new Promise(r => setTimeout(r, 1000));
+      return getOrCreateUser(slack_id, slackClient, retries - 1);
+    }
+    return { user: null, created: false, error: e.message || "Unknown error" };
   }
 }
 
